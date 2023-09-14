@@ -66,4 +66,5 @@ Node: (Source: Node, Args: [Any], Kwargs: {String:Any})
 Node1 -> Node2 -> Node3
 
 
-Node
+pl.scan_csv("...") -> LazyFrameNode
+pl.collect() -> This is going to immediately instantiate it. This is no longer part of the project.

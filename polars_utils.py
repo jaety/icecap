@@ -1,32 +1,25 @@
 import polars as pl
+from functools import update_wrapper
 
 """
 TODOs
 * getattr working with intellisense
 """
 
+pl.LazyFrame.tracer = lambda self: LazyFrameSource(self)
+pl.DataFrame.tracer = lambda self: LazyFrameSource(self.lazy())
+
 def prep_arg(arg):
-    return arg() if isinstance(arg,LazyFrameNode) else arg 
+    return arg() if isinstance(arg,LazyFrameBase) else arg 
 
 def prep_args(args, kwargs):
     args = [prep_arg(a) for a in args]
     kwargs = {k:prep_arg(v) for k,v in kwargs.items()}
     return args,kwargs
 
-class LazyFrameNode:
-    def __init__(self, parent, parent_attr, args=None, kwargs=None):
-        self.parent      = parent
-        self.parent_attr = parent_attr
-        self.args = args if args is not None else []
-        self.kwargs = kwargs if kwargs is not None else {}
-
+class LazyFrameBase:
     def copy(self):
         return LazyFrameNode(self.parent, self.parent_attr, self.args, self.kwargs)
-
-    def value(self):
-        parent_obj = self.parent.value() if isinstance(self.parent, LazyFrameNode) else self.parent
-        args, kwargs = prep_args(self.args, self.kwargs)
-        return getattr(parent_obj, self.parent_attr)(*args, **kwargs)
 
     @property
     def inplace(self):
@@ -35,8 +28,9 @@ class LazyFrameNode:
     def __getattr__(self, attr):
         value = self.value() 
         if hasattr(value, attr):
+            inner_attr = getattr(value, attr)
             if callable(getattr(value, attr)):
-                return LazyFrameMethod(self, attr)
+                return LazyFrameMethod(self, attr, inner_attr)
             else:
                 return value
         else:
@@ -54,6 +48,29 @@ class LazyFrameNode:
 
     def group(self, expr):
         return Group(self, expr)
+    
+class LazyFrameSource(LazyFrameBase):
+    def __init__(self, value):
+        self._value = value 
+        self.args = []
+        self.kwargs = {}
+    
+    def value(self):
+        return self._value 
+
+class LazyFrameNode(LazyFrameBase):
+    def __init__(self, parent, parent_attr, args=None, kwargs=None):
+        self.parent      = parent
+        self.parent_attr = parent_attr
+        self.args = args if args is not None else []
+        self.kwargs = kwargs if kwargs is not None else {}
+
+    def value(self):
+        parent_obj = self.parent.value() if isinstance(self.parent, LazyFrameBase) else self.parent
+        args, kwargs = prep_args(self.args, self.kwargs)
+        return getattr(parent_obj, self.parent_attr)(*args, **kwargs)
+
+
 
 class Group:
     def __init__(self, node, grouping_expr):
@@ -82,10 +99,13 @@ class InPlace:
             raise AttributeError(f"Node has no attribute {attr}")
 
 class LazyFrameMethod:
-    def __init__(self, node, attr, inplace=False):
+    def __init__(self, node, attr, wrapped=None, inplace=False):
         self.node = node
         self.attr = attr
         self.inplace = inplace
+
+        if wrapped is not None:
+            update_wrapper(self, wrapped)
 
     def __call__(self, *args, **kwargs):
         if self.inplace:
@@ -126,6 +146,8 @@ def traverse(df, reverse=False):
     while hasattr(df, 'parent'):
         result.append(df)
         df = df.parent
+    # if isinstance(df, LazyFrameSource):
+    #     result.append(df)
     return result[::-1] if not reverse else result 
 
 def arg_format(a):
