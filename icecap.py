@@ -19,15 +19,16 @@ def prep_args(args, kwargs):
     kwargs = {k:prep_arg(v) for k,v in kwargs.items()}
     return args,kwargs
 
-def traverse(df, reverse=False):
+def traverse(df, reverse=False, named_only=False):
     result = []
     while hasattr(df, 'parent'):
-        result.append(df)
+        if not named_only or df.name:
+            result.append(df)
         df = df.parent
     return result[::-1] if not reverse else result 
 
 class Frame:
-    def __init__(self, wrapped, parent, parent_attr, args, kwargs):
+    def __init__(self, wrapped, parent, parent_attr, args, kwargs, project=None):
         self.wrapped = wrapped
 
         self.parent = parent 
@@ -35,6 +36,12 @@ class Frame:
         self.args = args 
         self.kwargs = kwargs 
 
+        self.project = project
+        self.name = None
+
+        if self.project is not None:
+            self.project.add(self)
+        
     def __getattr__(self, attr):
         if hasattr(self.wrapped, attr):
             property = getattr(self.wrapped, attr)
@@ -49,10 +56,10 @@ class Frame:
         return self.wrapped._repr_html_()
     
     def copy(self):
-        return self.__class__()        
+        return Frame(self.wrapped, self.parent, self.parent_attr, self.args, self.kwargs, self.project)    
 
     def inspect(self, adjust_df=lambda x:x, adjust_lf=lambda x:x):
-        inspect_df(self, adjust_df, adjust_lf)
+        return inspect_df(self, adjust_df, adjust_lf)
 
 class FrameMethod:
     def __init__(self, frame, attr):
@@ -63,14 +70,32 @@ class FrameMethod:
     def __call__(self, *args, **kwargs):
         p_args, p_kwargs = prep_args(args, kwargs)
         value = self.method(*p_args, **p_kwargs)
-        return Frame(value, self.frame, self.attr, args, kwargs) 
+        return Frame(value, self.frame, self.attr, args, kwargs, project=self.frame.project) 
 
 class Project:
     def __init__(self):
         self.wrapped = pl 
+        self.frames  = []
+        self.named   = {}
+        self.name_lookup = {}
+        self.project = self
 
     def __dir__(self):
         return self.wrapped.__dir__()
+    
+    def add(self, frame):
+        self.frames.append(frame)
+
+    def name_for(self, frame):
+        return self.name_lookup.get(frame, None)
+
+    def __setitem__(self, key, value):
+        self.named[key] = value 
+        value.name = key
+        self.name_lookup[value] = key
+    
+    def __getitem__(self,key):
+        return self.named[key]
 
     def __getattr__(self, attr):
         if hasattr(self.wrapped, attr):
@@ -124,7 +149,6 @@ def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x):
     from ipywidgets import interactive, interact
     import ipywidgets as widgets
     from IPython.display import display, HTML
-
     stack = traverse(df)
     min_ = 0 
     max_ = len(stack)-1
@@ -154,5 +178,5 @@ def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x):
 
     update_trace(max_)
     update_output(max_)
-    display(widget)
+    return widget
 

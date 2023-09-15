@@ -7,11 +7,15 @@ def test_create():
     df = proj.DataFrame({'a':[0,1,2]})
     assert type(df) == ice.Frame
 
+def test_naming():
+    proj = Project()
+    proj['a'] = proj.DataFrame({'a':[0,1,2]})
+    assert list(*(proj.named.keys()))[0] == 'a'
 
 def test_copy():
-    df = ice.DataFrame()
+    df = Project().DataFrame({'a':[0,1,2]})
     df2= df.copy()
-    assert type(df2)==ice.DataFrame
+    assert type(df2)==ice.Frame
 
 def test_df():
     proj = Project()
