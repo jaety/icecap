@@ -58,8 +58,8 @@ class Frame:
     def copy(self):
         return Frame(self.wrapped, self.parent, self.parent_attr, self.args, self.kwargs, self.project)    
 
-    def inspect(self, adjust_df=lambda x:x, adjust_lf=lambda x:x):
-        return inspect_df(self, adjust_df, adjust_lf)
+    def inspect(self, adjust_df=lambda x:x, adjust_lf=lambda x:x, reversed=False, named_only=False):
+        return inspect_df(self, adjust_df, adjust_lf, reversed=reversed, named_only=named_only)
 
 class FrameMethod:
     def __init__(self, frame, attr):
@@ -133,23 +133,25 @@ def pipe_str(df, reverse=False):
         sigs = [signature(d, "" if i==0 else "  .") for i,d in enumerate(df_list)]
     return "\n".join(sigs)
 
-def pipe_html(df, reverse=False, highlight=None):
+def pipe_html(df, reverse=False, highlight=None, named_only=False):
     df_list = traverse(df, reverse)
     shared_styles = """padding:0px; margin:5px; font-family: "Lucida Console", Monospace; font-size:1em"""
     sigs = []
     for i,d in enumerate(df_list):
-        text_indent = i*20 if reverse else (0 if i==0 else 20)
-        prefix = "" if reverse else ("" if i==0 else ".")
-        font_weight = "bold" if highlight==i else "normal"
-        sigs.append(f"<p style='text-indent:{text_indent}px; font-weight:{font_weight}; {shared_styles}'>{signature(d, prefix)}</p>")
+        if (named_only and d.name) or not named_only:
+            name = f"[{d.name}] " if d.name else ""
+            text_indent = i*20 if reverse else (0 if i==0 else 20)
+            prefix = "" if reverse else ("" if i==0 else ".")
+            font_weight = "bold" if highlight==i else "normal"
+            sigs.append(f"<p style='text-indent:{text_indent}px; font-weight:{font_weight}; {shared_styles}'>{name}{signature(d, prefix)}</p>")
     return "\n".join(sigs)
 
-def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x):
+def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x, reversed=False, named_only=False):
     # These are internalized because only applicatble in jupyter. Better pattern for this?
     from ipywidgets import interactive, interact
     import ipywidgets as widgets
     from IPython.display import display, HTML
-    stack = traverse(df)
+    stack = traverse(df, reverse=reversed, named_only=named_only)
     min_ = 0 
     max_ = len(stack)-1
     slider = widgets.IntSlider(min=min_, max=max_, step=1, value=max_)
@@ -164,7 +166,7 @@ def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x):
         i = event if isinstance(event,int) else event['new']
         trace_out.clear_output(wait=True)
         with trace_out:
-            display(HTML(pipe_html(df, highlight=i)))
+            display(HTML(pipe_html(df, highlight=i, reverse=reversed, named_only=named_only)))
     slider.observe(update_trace, 'value')
 
     def update_output(event):
