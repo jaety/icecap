@@ -1,0 +1,7 @@
+.metals/
+.conda/
+.DS_Store
+.vscode/
+.pytest_cache/
+__pycache__/
+z_archive/
