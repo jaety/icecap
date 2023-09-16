@@ -23,3 +23,9 @@ def test_df():
     df_b = df_a.with_columns(b = pl.col('a')+1)
 
     assert df_b.parent == df_a
+
+def test_inplace():
+    proj = Project()
+    df_a = proj.DataFrame({'a':[1,2,3]})
+    df_a.inplace().with_columns(b = pl.col('a')+1)
+    assert df_a.columns == ['a','b']

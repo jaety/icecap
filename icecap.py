@@ -19,14 +19,6 @@ def prep_args(args, kwargs):
     kwargs = {k:prep_arg(v) for k,v in kwargs.items()}
     return args,kwargs
 
-def traverse(df, reverse=False, named_only=False):
-    result = []
-    while hasattr(df, 'parent'):
-        if not named_only or df.name:
-            result.append(df)
-        df = df.parent
-    return result[::-1] if not reverse else result 
-
 class Frame:
     def __init__(self, wrapped, parent, parent_attr, args, kwargs, project=None):
         self.wrapped = wrapped
@@ -39,9 +31,14 @@ class Frame:
         self.project = project
         self.name = None
 
+        self._over_context = None
+
         if self.project is not None:
             self.project.add(self)
-        
+    
+    def over(self, over_expr):
+        return Over(self, over_expr)
+
     def __getattr__(self, attr):
         if hasattr(self.wrapped, attr):
             property = getattr(self.wrapped, attr)
@@ -51,26 +48,71 @@ class Frame:
                 return property
         else:
             raise AttributeError(f"Frame has no attribute {attr}")
+        
+    def __setitem__(self, key, expr):
+        if self._over_context:
+            expr = expr.over(self._over_context)
+        self.inplace().with_columns(**{key:expr})
 
     def _repr_html_(self):
         return self.wrapped._repr_html_()
     
-    def copy(self):
-        return Frame(self.wrapped, self.parent, self.parent_attr, self.args, self.kwargs, self.project)    
+    def inplace(self):
+        return InPlace(self)
 
-    def inspect(self, adjust_df=lambda x:x, adjust_lf=lambda x:x, reversed=False, named_only=False):
-        return inspect_df(self, adjust_df, adjust_lf, reversed=reversed, named_only=named_only)
+    def copy(self):
+        return Frame(self.wrapped, self, "copy", [], {}, self.project)
+    
+    def true_copy(self):
+        return Frame(self.wrapped, self.parent, self.parent_attr, self.args, self.kwargs)
+
+    def inplace_update(self, new_parent, new_frame):
+        self.wrapped = new_frame.wrapped
+        self.parent  = new_parent 
+        self.parent_attr = new_frame.parent_attr 
+        self.args = new_frame.args 
+        self.kwargs = new_frame.kwargs 
+    
+    def inspect(self, adjust=None, reversed=False, named_only=False, until=None):
+        return inspect_df(self, adjust, reversed=reversed, named_only=named_only, until=until)
 
 class FrameMethod:
-    def __init__(self, frame, attr):
+    def __init__(self, frame, attr, inplace=False):
         self.frame, self.attr = frame, attr 
         self.method = getattr(self.frame.wrapped, self.attr)
+        self.inplace = inplace
         update_wrapper(self, self.method)
     
     def __call__(self, *args, **kwargs):
         p_args, p_kwargs = prep_args(args, kwargs)
         value = self.method(*p_args, **p_kwargs)
-        return Frame(value, self.frame, self.attr, args, kwargs, project=self.frame.project) 
+        top_frame = Frame(value, self.frame, self.attr, args, kwargs, project=self.frame.project)
+        if self.inplace:
+            new_parent = self.frame.true_copy()
+            self.frame.inplace_update(new_parent, top_frame)
+            return self.frame
+        else:
+            return top_frame
+
+class InPlace:
+    def __init__(self, frame):
+        self.frame = frame 
+
+    def __getattr__(self, attr):
+        if hasattr(self.frame.wrapped, attr):
+            return FrameMethod(self.frame, attr, inplace=True)
+        else:
+            AttributeError(f"Frame has no attribute {attr}")
+
+class Over:
+    def __init__(self, frame, over_expr):
+        self.frame = frame 
+        self.over_expr = over_expr 
+
+    def __enter__(self):
+        self.frame._over_context = self.over_expr
+    def __exit__(self, type, value, traceback):
+        self.frame._over_context = None
 
 class Project:
     def __init__(self):
@@ -111,6 +153,18 @@ class Project:
 # Visuals        
 #################################
 
+def traverse(df, reverse=False, named_only=False, until=None):
+    result = []
+    if isinstance(until, str):
+        stop_at = lambda x: x.name == until 
+    else:
+        stop_at = until if until else lambda x: False
+    while hasattr(df, 'parent') and not stop_at(df):
+        if not named_only or df.name:
+            result.append(df)
+        df = df.parent
+    return result[::-1] if not reverse else result 
+
 def arg_format(a):
     if isinstance(a, str):
         return f'"{str(a)}"'
@@ -134,7 +188,7 @@ def pipe_str(df, reverse=False):
     return "\n".join(sigs)
 
 def pipe_html(df, reverse=False, highlight=None, named_only=False):
-    df_list = traverse(df, reverse)
+    df_list = traverse(df, reverse) if isinstance(df, Frame) else df
     shared_styles = """padding:0px; margin:5px; font-family: "Lucida Console", Monospace; font-size:1em"""
     sigs = []
     for i,d in enumerate(df_list):
@@ -146,12 +200,42 @@ def pipe_html(df, reverse=False, highlight=None, named_only=False):
             sigs.append(f"<p style='text-indent:{text_indent}px; font-weight:{font_weight}; {shared_styles}'>{name}{signature(d, prefix)}</p>")
     return "\n".join(sigs)
 
-def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x, reversed=False, named_only=False):
+class Adjuster:
+    def adjust_lf(self, frame):
+        return frame 
+    def adjust_df(self, frame):
+        return frame 
+    def adjust(self, frame):
+        if isinstance(frame, pl.LazyFrame):
+            return self.adjust_lf(frame)
+        elif isinstance(frame, pl.DataFrame):
+            return self.adjust_df(frame)
+        else:
+            return frame
+    
+    def __call__(self, frame):
+        return self.adjust(frame)
+
+class DefaultAdjuster(Adjuster):
+    def __init__(self, head_count=10):
+        self.head_count = head_count 
+
+    def shared(self, frame):
+        return frame.head(self.head_count)
+    def adjust_lf(self, frame):
+        return self.shared(frame).collect()
+    def adjust_df(self, frame):
+        return self.shared(frame)
+    
+
+def inspect_df(df, adjust=None, reversed=False, named_only=False, until=None):
     # These are internalized because only applicatble in jupyter. Better pattern for this?
     from ipywidgets import interactive, interact
     import ipywidgets as widgets
     from IPython.display import display, HTML
-    stack = traverse(df, reverse=reversed, named_only=named_only)
+    adjust = adjust if adjust else DefaultAdjuster()
+
+    stack = traverse(df, reverse=reversed, named_only=named_only, until=until)
     min_ = 0 
     max_ = len(stack)-1
     slider = widgets.IntSlider(min=min_, max=max_, step=1, value=max_)
@@ -166,7 +250,7 @@ def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x, reversed=False, n
         i = event if isinstance(event,int) else event['new']
         trace_out.clear_output(wait=True)
         with trace_out:
-            display(HTML(pipe_html(df, highlight=i, reverse=reversed, named_only=named_only)))
+            display(HTML(pipe_html(stack, highlight=i, reverse=reversed, named_only=named_only)))
     slider.observe(update_trace, 'value')
 
     def update_output(event):
@@ -174,7 +258,6 @@ def inspect_df(df, adjust_df=lambda x:x, adjust_lf=lambda x:x, reversed=False, n
         df_out.clear_output(wait=True)
         with df_out:
             obj = stack[i].wrapped
-            adjust = adjust_lf if isinstance(obj, pl.LazyFrame) else adjust_df
             display(adjust(obj))
     slider.observe(update_output, 'value')
 
