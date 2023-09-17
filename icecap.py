@@ -1,24 +1,21 @@
 import polars as pl
 from functools import update_wrapper
 
-"""
-Question here is whether I care that it's a LazyFrame
-or a DataFrame
+pl.DataFrame.collect = lambda self: self
 
-I think the difference is that the DataFrame will
-execute immediately, so I should capture the value
-"""
 def is_polars_frame(obj):
     return isinstance(obj, pl.LazyFrame) or isinstance(obj, pl.DataFrame)
 
 def prep_arg(arg):
-    return arg() if isinstance(arg,Frame) else arg 
-
+    if isinstance(arg, Frame):
+        return arg.wrapped 
+    else:
+        return arg
+    
 def prep_args(args, kwargs):
     args = [prep_arg(a) for a in args]
     kwargs = {k:prep_arg(v) for k,v in kwargs.items()}
     return args,kwargs
-
 class Frame:
     def __init__(self, wrapped, parent, parent_attr, args, kwargs, project=None):
         self.wrapped = wrapped
@@ -159,9 +156,11 @@ def traverse(df, reverse=False, named_only=False, until=None):
         stop_at = lambda x: x.name == until 
     else:
         stop_at = until if until else lambda x: False
-    while hasattr(df, 'parent') and not stop_at(df):
+    while hasattr(df, 'parent'):
         if not named_only or df.name:
             result.append(df)
+        if stop_at(df):
+            break
         df = df.parent
     return result[::-1] if not reverse else result 
 
@@ -198,42 +197,33 @@ def pipe_html(df, reverse=False, highlight=None, named_only=False):
             prefix = "" if reverse else ("" if i==0 else ".")
             font_weight = "bold" if highlight==i else "normal"
             sigs.append(f"<p style='text-indent:{text_indent}px; font-weight:{font_weight}; {shared_styles}'>{name}{signature(d, prefix)}</p>")
-    return "\n".join(sigs)
+    return "\n".join(sigs)    
 
-class Adjuster:
-    def adjust_lf(self, frame):
-        return frame 
-    def adjust_df(self, frame):
-        return frame 
-    def adjust(self, frame):
-        if isinstance(frame, pl.LazyFrame):
-            return self.adjust_lf(frame)
-        elif isinstance(frame, pl.DataFrame):
-            return self.adjust_df(frame)
+from functools import partial
+def adjust_inner(df, filters={}, head=None, finalize=lambda df: df.collect()):
+    out = df 
+    for key,filter_expr in filters.items():
+        if isinstance(key, tuple):
+            colname, dtype = key 
         else:
-            return frame
-    
-    def __call__(self, frame):
-        return self.adjust(frame)
+            colname, dtype = key, None
+        if colname in out.schema and (dtype is None or out.schema[colname] == dtype):
+            out = out.filter(filter_expr)
 
-class DefaultAdjuster(Adjuster):
-    def __init__(self, head_count=10):
-        self.head_count = head_count 
+    if head is not None:
+        out = out.head(head)
 
-    def shared(self, frame):
-        return frame.head(self.head_count)
-    def adjust_lf(self, frame):
-        return self.shared(frame).collect()
-    def adjust_df(self, frame):
-        return self.shared(frame)
-    
+    return finalize(out)
 
-def inspect_df(df, adjust=None, reversed=False, named_only=False, until=None):
+def adjust(filters={}, head=None, finalize=lambda df: df.collect()):
+    return partial(adjust_inner, filters=filters, head=head, finalize=finalize)
+
+def inspect_df(df, adjuster=None, reversed=False, named_only=False, until=None):
     # These are internalized because only applicatble in jupyter. Better pattern for this?
     from ipywidgets import interactive, interact
     import ipywidgets as widgets
     from IPython.display import display, HTML
-    adjust = adjust if adjust else DefaultAdjuster()
+    adjuster = adjuster if adjuster else adjust(head=10)
 
     stack = traverse(df, reverse=reversed, named_only=named_only, until=until)
     min_ = 0 
@@ -258,7 +248,7 @@ def inspect_df(df, adjust=None, reversed=False, named_only=False, until=None):
         df_out.clear_output(wait=True)
         with df_out:
             obj = stack[i].wrapped
-            display(adjust(obj))
+            display(adjuster(obj))
     slider.observe(update_output, 'value')
 
     update_trace(max_)
