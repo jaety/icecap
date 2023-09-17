@@ -7,7 +7,7 @@ def is_polars_frame(obj):
     return isinstance(obj, pl.LazyFrame) or isinstance(obj, pl.DataFrame)
 
 def prep_arg(arg):
-    if isinstance(arg, Frame) or isinstance(arg,Param):
+    if isinstance(arg, Frame):
         return arg.wrapped 
     else:
         return arg
@@ -16,11 +16,6 @@ def prep_args(args, kwargs):
     args = [prep_arg(a) for a in args]
     kwargs = {k:prep_arg(v) for k,v in kwargs.items()}
     return args,kwargs
-
-class Param:
-    def __init__(self, wrapped):
-        self.wrapped = wrapped 
-
 class Frame:
     def __init__(self, wrapped, parent, parent_attr, args, kwargs, project=None):
         self.wrapped = wrapped
